@@ -57,10 +57,15 @@ export const PRESETS: DimensionPreset[] = [
   }
 ];
 
-export const MATERIALS = [
+export const O_RING_MATERIALS = [
   "NBR-70-1 (1種A)",
   "NBR-90-1 (1種B)",
   "FKM-70 (4種D)",
   "VMQ-50 (シリコン)",
   "EPDM-70"
+];
+
+export const BACKUP_RING_MATERIALS = [
+  "PTFE",
+  "充填剤入りPTFE"
 ];

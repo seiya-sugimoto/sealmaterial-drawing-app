@@ -7,7 +7,9 @@ interface DrawingCanvasProps {
 }
 
 // Helper to format dimension text with tolerances
-const formatTolerance = (val: number, plus?: number, minus?: number, unit: string = ''): string => {
+const formatTolerance = (val: number | undefined, plus?: number | undefined, minus?: number | undefined, unit: string = ''): string => {
+  if (val === undefined) return ''; // Should be caught by validation, but safe fallback
+  
   const p = plus || 0;
   const m = minus || 0;
 
@@ -74,7 +76,8 @@ export const DrawingCanvas = forwardRef<HTMLDivElement, DrawingCanvasProps>(({ d
   // -------------------------------------------------------------------------
   const renderORing = () => {
     if (!data.oRingDims) return null;
-    const { id, idTolPlus, idTolMinus, w, wTolPlus, wTolMinus } = data.oRingDims;
+    // Default to 0 for rendering calculations if undefined, though text will be handled by formatTolerance
+    const { id = 0, idTolPlus, idTolMinus, w = 0, wTolPlus, wTolMinus } = data.oRingDims;
 
     // ViewBox handling: Center is 400, 300.
     // We normalize visualization size regardless of real size to fit the paper.
@@ -82,7 +85,7 @@ export const DrawingCanvas = forwardRef<HTMLDivElement, DrawingCanvasProps>(({ d
     const cy = 250;
     const baseRadius = 100; // Visual radius
     const innerRadius = baseRadius;
-    const thicknessScale = (w / id) * baseRadius * 3; // Exaggerate thickness for visibility if needed, or keep proportional
+    const thicknessScale = (w / (id || 1)) * baseRadius * 3; // Avoid divide by zero
     const visualThickness = Math.max(15, Math.min(thicknessScale, 40)); // Clamp visual thickness
     const outerRadius = innerRadius + visualThickness;
 
@@ -159,11 +162,11 @@ export const DrawingCanvas = forwardRef<HTMLDivElement, DrawingCanvasProps>(({ d
   const renderBackupRing = () => {
     if (!data.backupRingDims) return null;
     const { 
-      od, odTolPlus, odTolMinus, 
-      id, idTolPlus, idTolMinus, 
-      t, tTolPlus, tTolMinus, 
+      od = 0, odTolPlus, odTolMinus, 
+      id = 0, idTolPlus, idTolMinus, 
+      t = 0, tTolPlus, tTolMinus, 
       shape,
-      angle, angleTolPlus, angleTolMinus
+      angle = 22, angleTolPlus, angleTolMinus
     } = data.backupRingDims;
 
     // View Config
@@ -174,7 +177,7 @@ export const DrawingCanvas = forwardRef<HTMLDivElement, DrawingCanvasProps>(({ d
     const baseRadius = 80;
     // Calculate visual thickness based on real ratio, clamped
     const radialWidth = (od - id) / 2;
-    const tScale = (radialWidth / id) * baseRadius * 4;
+    const tScale = (radialWidth / (id || 1)) * baseRadius * 4;
     const visualWidth = Math.max(10, Math.min(tScale, 30)); 
     
     const innerRadius = baseRadius;
@@ -320,7 +323,7 @@ export const DrawingCanvas = forwardRef<HTMLDivElement, DrawingCanvasProps>(({ d
 
         {/* --- TABLE for Backup Ring (Common) --- */}
         <foreignObject x={450} y={50} width={320} height={100}>
-            <div xmlns="http://www.w3.org/1999/xhtml" className="text-xs">
+            <div className="text-xs">
                 <table className="w-full border-collapse border border-black bg-white">
                     <thead>
                         <tr className="bg-gray-100">

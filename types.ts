@@ -4,29 +4,29 @@ export type PartType = 'O-Ring' | 'Backup Ring';
 export type BackupRingShape = 'Endless' | 'Spiral' | 'Bias Cut';
 
 export interface ORingDimensions {
-  id: number;
-  idTolPlus: number;
-  idTolMinus: number;
-  w: number;
-  wTolPlus: number;
-  wTolMinus: number;
+  id: number | undefined;
+  idTolPlus: number | undefined;
+  idTolMinus: number | undefined;
+  w: number | undefined;
+  wTolPlus: number | undefined;
+  wTolMinus: number | undefined;
 }
 
 export interface BackupRingDimensions {
-  od: number;
-  odTolPlus: number;
-  odTolMinus: number;
-  id: number;
-  idTolPlus: number;
-  idTolMinus: number;
-  t: number;
-  tTolPlus: number;
-  tTolMinus: number;
+  od: number | undefined;
+  odTolPlus: number | undefined;
+  odTolMinus: number | undefined;
+  id: number | undefined;
+  idTolPlus: number | undefined;
+  idTolMinus: number | undefined;
+  t: number | undefined;
+  tTolPlus: number | undefined;
+  tTolMinus: number | undefined;
   shape: BackupRingShape;
   // Angle properties for Bias Cut (and potentially Spiral)
-  angle?: number;
-  angleTolPlus?: number;
-  angleTolMinus?: number;
+  angle?: number | undefined;
+  angleTolPlus?: number | undefined;
+  angleTolMinus?: number | undefined;
 }
 
 export interface DrawingData {
