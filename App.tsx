@@ -8,14 +8,16 @@ import {
   PartType, 
   ORingDimensions, 
   BackupRingDimensions,
-  BackupRingShape
+  BackupRingShape,
+  CompositeComponentDetails
 } from './types';
 import { PRESETS, DEFAULT_COMPANY_NAME, O_RING_MATERIALS, BACKUP_RING_MATERIALS } from './constants';
 import { saveDrawing, getHistory, generateDrawingNo } from './services/storageService';
 import { DrawingCanvas } from './components/DrawingCanvas';
 import { Button } from './components/Button';
+import { QuoteModal } from './components/QuoteModal';
 
-// Initial Empty State using undefined for numeric fields to show empty inputs
+// Initial Empty States
 const initialORingDims: ORingDimensions = { 
   id: undefined, idTolPlus: undefined, idTolMinus: undefined, 
   w: undefined, wTolPlus: undefined, wTolMinus: undefined 
@@ -26,6 +28,29 @@ const initialBackupDims: BackupRingDimensions = {
   t: undefined, tTolPlus: undefined, tTolMinus: undefined,
   shape: 'Bias Cut',
   angle: 22, angleTolPlus: undefined, angleTolMinus: undefined
+};
+const initialCompositeDetails: CompositeComponentDetails = {
+  oRingPartNo: '', oRingMaterial: O_RING_MATERIALS[0], oRingHardness: '70',
+  backupRingPartNo: '', backupRingMaterial: BACKUP_RING_MATERIALS[0]
+};
+
+// Helper to format dimension text with tolerances for the Email Body
+const formatDimForEmail = (val: number | undefined, plus?: number | undefined, minus?: number | undefined, unit: string = ''): string => {
+  if (val === undefined) return '未入力';
+  
+  const p = plus || 0;
+  const m = minus || 0;
+
+  let tolerance = '';
+  if (p === 0 && m === 0) {
+    tolerance = '公差なし';
+  } else if (p === m) {
+    tolerance = `±${p}${unit}`;
+  } else {
+    tolerance = `+${p}${unit} -${m}${unit}`;
+  }
+  
+  return `${val}${unit} (公差: ${tolerance})`;
 };
 
 // Helper Component for Dimension Input Group
@@ -47,7 +72,6 @@ const DimensionInputGroup = ({
     <div className="flex space-x-2 items-center">
       <div className="flex-1">
         <div className="relative">
-          {/* value={baseVal ?? ''} checks for undefined/null and shows empty string */}
           <input 
             type="number" step="0.01" 
             value={baseVal ?? ''} 
@@ -87,10 +111,8 @@ const DimensionInputGroup = ({
 );
 
 function App() {
-  // View State: 'form' | 'preview' | 'history'
   const [view, setView] = useState<'form' | 'preview' | 'history'>('form');
   
-  // Data State
   const [formData, setFormData] = useState<DrawingData>({
     id: '',
     drawingNo: '',
@@ -103,19 +125,22 @@ function App() {
     note: '',
     createdAt: new Date().toISOString(),
     oRingDims: initialORingDims,
-    backupRingDims: initialBackupDims
+    backupRingDims: initialBackupDims,
+    compositeDetails: initialCompositeDetails
   });
 
   const [history, setHistory] = useState<DrawingData[]>([]);
   const drawingRef = useRef<HTMLDivElement>(null);
   const [isGeneratingPdf, setIsGeneratingPdf] = useState(false);
+  
+  const [isQuoteModalOpen, setIsQuoteModalOpen] = useState(false);
+  const [quoteText, setQuoteText] = useState('');
+  const [quoteSubject, setQuoteSubject] = useState('');
 
-  // Initialize History on Load
   useEffect(() => {
     setHistory(getHistory());
   }, []);
 
-  // Initialize Drawing No
   useEffect(() => {
     if (!formData.drawingNo) {
       setFormData(prev => ({
@@ -125,23 +150,28 @@ function App() {
     }
   }, [formData.partType, formData.drawingNo]);
 
-  // When PartType changes, default the material to the first available option for that type
   useEffect(() => {
     const defaultMat = formData.partType === 'O-Ring' ? O_RING_MATERIALS[0] : BACKUP_RING_MATERIALS[0];
-    // Only reset if the current value is not in the new list/standard format? 
-    // For simplicity, let's reset to valid default if switching types drastically.
-    // However, since we allow free text, maybe just keeping it is fine, but resetting is safer for UX.
-    setFormData(prev => ({ ...prev, material: defaultMat }));
+    // Don't override if composite
+    if (formData.partType !== 'Composite') {
+       setFormData(prev => ({ ...prev, material: defaultMat }));
+    }
   }, [formData.partType]);
 
-  // Handlers
   const handleInputChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement>) => {
     const { name, value } = e.target;
     setFormData(prev => ({ ...prev, [name]: value }));
   };
 
-  const handleDimChange = (type: PartType, field: string, value: string) => {
-    // If value is empty string, set to undefined. Otherwise parse float.
+  const handleCompositeDetailChange = (e: React.ChangeEvent<HTMLInputElement | HTMLSelectElement>) => {
+    const { name, value } = e.target;
+    setFormData(prev => ({
+      ...prev,
+      compositeDetails: { ...prev.compositeDetails!, [name]: value }
+    }));
+  };
+
+  const handleDimChange = (type: 'O-Ring' | 'Backup Ring', field: string, value: string) => {
     const numVal = value === '' ? undefined : parseFloat(value);
     
     if (type === 'O-Ring') {
@@ -168,6 +198,7 @@ function App() {
     const preset = PRESETS.find(p => p.code === code);
     if (!preset) return;
 
+    // Presets are strictly O-Ring or Backup Ring currently
     setFormData(prev => ({
       ...prev,
       partType: preset.partType,
@@ -177,22 +208,29 @@ function App() {
   };
 
   const handleGenerate = () => {
-    // Basic Validation
     if (!formData.partNo) {
-      alert("品番を入力してください");
+      alert("品番 (セット品番) を入力してください");
       return;
     }
 
-    // Validate Dimensions
-    if (formData.partType === 'O-Ring') {
-      if (formData.oRingDims?.id === undefined || formData.oRingDims?.w === undefined) {
+    if (formData.partType === 'O-Ring' || formData.partType === 'Composite') {
+       if (formData.oRingDims?.id === undefined || formData.oRingDims?.w === undefined) {
         alert("Oリングの主要寸法 (ID, W) は必須です。");
         return;
       }
-    } else {
+    }
+    
+    if (formData.partType === 'Backup Ring' || formData.partType === 'Composite') {
       if (formData.backupRingDims?.od === undefined || formData.backupRingDims?.id === undefined || formData.backupRingDims?.t === undefined) {
         alert("バックアップリングの主要寸法 (φD, φd, T) は必須です。");
         return;
+      }
+    }
+
+    if (formData.partType === 'Composite') {
+      if (!formData.compositeDetails?.oRingPartNo || !formData.compositeDetails?.backupRingPartNo) {
+         alert("構成品のP/Nを入力してください。");
+         return;
       }
     }
 
@@ -205,14 +243,12 @@ function App() {
     setIsGeneratingPdf(true);
 
     try {
-      // 1. Capture the drawing div
       const canvas = await html2canvas(drawingRef.current, {
-        scale: 2, // Higher scale for better resolution
+        scale: 2,
         useCORS: true,
         logging: false
       });
 
-      // 2. Generate PDF
       const imgData = canvas.toDataURL('image/png');
       const pdf = new jsPDF({
         orientation: 'landscape',
@@ -226,10 +262,9 @@ function App() {
       pdf.addImage(imgData, 'PNG', 0, 0, pdfWidth, pdfHeight);
       pdf.save(`${formData.drawingNo}.pdf`);
 
-      // 3. Save to History
       const dataToSave = { ...formData, id: Date.now().toString() };
       saveDrawing(dataToSave);
-      setHistory(getHistory()); // Refresh list
+      setHistory(getHistory());
 
     } catch (err) {
       console.error("PDF Generation failed", err);
@@ -239,22 +274,83 @@ function App() {
     }
   };
 
+  const handleOpenQuoteModal = () => {
+    const typeLabel = formData.partType === 'O-Ring' ? 'Oリング' : 
+                      formData.partType === 'Backup Ring' ? 'バックアップリング' : 
+                      'Oリング＋バックアップリング複合品';
+    
+    const subject = `【見積もり依頼】${typeLabel}納入図`;
+    let body = `${formData.companyName || DEFAULT_COMPANY_NAME} 御中\n\n`;
+    body += `以下条件にて${typeLabel}の見積もりをお願いします。\n\n`;
+    
+    body += `部品種別：${formData.partType}\n`;
+    body += `図番：${formData.drawingNo}\n`;
+    body += `品番（セット）：${formData.partNo}\n`;
+    body += `客先コード：${formData.customerCode}\n\n`;
+
+    if (formData.partType === 'Composite') {
+       const c = formData.compositeDetails!;
+       const odims = formData.oRingDims!;
+       const bdims = formData.backupRingDims!;
+       
+       body += `【構成1: Oリング】\n`;
+       body += `  P/N：${c.oRingPartNo}\n`;
+       body += `  材質/硬度：${c.oRingMaterial} / ${c.oRingHardness}\n`;
+       body += `  ID：${formatDimForEmail(odims.id, odims.idTolPlus, odims.idTolMinus)}\n`;
+       body += `  W ：${formatDimForEmail(odims.w, odims.wTolPlus, odims.wTolMinus)}\n`;
+       body += `\n`;
+
+       body += `【構成2: バックアップリング】\n`;
+       body += `  P/N：${c.backupRingPartNo}\n`;
+       body += `  材質：${c.backupRingMaterial}\n`;
+       body += `  形状：${bdims.shape}\n`;
+       body += `  φD：${formatDimForEmail(bdims.od, bdims.odTolPlus, bdims.odTolMinus)}\n`;
+       body += `  φd：${formatDimForEmail(bdims.id, bdims.idTolPlus, bdims.idTolMinus)}\n`;
+       body += `  T ：${formatDimForEmail(bdims.t, bdims.tTolPlus, bdims.tTolMinus)}\n`;
+       if (bdims.shape !== 'Endless') {
+          const angle = bdims.angle !== undefined ? bdims.angle : (bdims.shape === 'Spiral' ? 30 : 22);
+          body += `  角度：${formatDimForEmail(angle, bdims.angleTolPlus, bdims.angleTolMinus, '°')}\n`;
+       }
+
+    } else {
+        body += `材質：${formData.material}\n`;
+        body += `硬度：${formData.hardness}\n\n`;
+        body += `寸法：\n`;
+        if (formData.partType === 'O-Ring' && formData.oRingDims) {
+          body += `  ID：${formatDimForEmail(formData.oRingDims.id, formData.oRingDims.idTolPlus, formData.oRingDims.idTolMinus)}\n`;
+          body += `  W ：${formatDimForEmail(formData.oRingDims.w, formData.oRingDims.wTolPlus, formData.oRingDims.wTolMinus)}\n`;
+        } else if (formData.partType === 'Backup Ring' && formData.backupRingDims) {
+          body += `  φD：${formatDimForEmail(formData.backupRingDims.od, formData.backupRingDims.odTolPlus, formData.backupRingDims.odTolMinus)}\n`;
+          body += `  φd：${formatDimForEmail(formData.backupRingDims.id, formData.backupRingDims.idTolPlus, formData.backupRingDims.idTolMinus)}\n`;
+          body += `  T ：${formatDimForEmail(formData.backupRingDims.t, formData.backupRingDims.tTolPlus, formData.backupRingDims.tTolMinus)}\n`;
+          body += `  形状タイプ：${formData.backupRingDims.shape}\n`;
+          if (formData.backupRingDims.shape !== 'Endless') {
+             const angle = formData.backupRingDims.angle !== undefined ? formData.backupRingDims.angle : 
+                           (formData.backupRingDims.shape === 'Spiral' ? 30 : 22);
+             body += `  角度：${formatDimForEmail(angle, formData.backupRingDims.angleTolPlus, formData.backupRingDims.angleTolMinus, '°')}\n`;
+          }
+        }
+    }
+
+    body += `\n数量：____\n\n`;
+    body += `備考：\n${formData.note}\n\n`;
+    body += `よろしくお願いいたします。`;
+
+    setQuoteSubject(subject);
+    setQuoteText(body);
+    setIsQuoteModalOpen(true);
+  };
+
   const loadFromHistory = (item: DrawingData) => {
     setFormData(item);
     setView('form');
   };
 
-  // --- RENDER HELPERS ---
-
   const renderForm = () => {
-    // Dynamic material options based on part type
-    const materialOptions = formData.partType === 'O-Ring' ? O_RING_MATERIALS : BACKUP_RING_MATERIALS;
-
     return (
       <div className="max-w-4xl mx-auto bg-white p-8 rounded shadow">
         <h2 className="text-2xl font-bold mb-6 border-b pb-2">図面作成</h2>
         
-        {/* Top Controls */}
         <div className="grid grid-cols-1 md:grid-cols-2 gap-6 mb-6">
           <div>
             <label className="block text-sm font-medium text-gray-700">部品種別</label>
@@ -266,146 +362,195 @@ function App() {
             >
               <option value="O-Ring">O-Ring</option>
               <option value="Backup Ring">Backup Ring</option>
+              <option value="Composite">複合品 (O-Ring + Backup Ring)</option>
             </select>
           </div>
           <div>
-            <label className="block text-sm font-medium text-gray-700">寸法プリセット呼び出し</label>
-            <select 
-              onChange={(e) => applyPreset(e.target.value)}
-              className="mt-1 block w-full rounded-md border-gray-300 shadow-sm border p-2 bg-blue-50"
-              defaultValue=""
-            >
-              <option value="" disabled>選択してください</option>
-              {PRESETS.map(p => (
-                <option key={p.code} value={p.code}>
-                  {p.code} ({p.partType}) - {p.description}
-                </option>
-              ))}
-            </select>
+             {/* Hide Preset for Composite for simplicity now */}
+             {formData.partType !== 'Composite' && (
+                <>
+                <label className="block text-sm font-medium text-gray-700">寸法プリセット呼び出し</label>
+                <select 
+                  onChange={(e) => applyPreset(e.target.value)}
+                  className="mt-1 block w-full rounded-md border-gray-300 shadow-sm border p-2 bg-blue-50"
+                  defaultValue=""
+                >
+                  <option value="" disabled>選択してください</option>
+                  {PRESETS.map(p => (
+                    <option key={p.code} value={p.code}>
+                      {p.code} ({p.partType}) - {p.description}
+                    </option>
+                  ))}
+                </select>
+                </>
+             )}
           </div>
         </div>
 
-        <div className="grid grid-cols-1 md:grid-cols-2 gap-6">
-          {/* Left Column: Meta Data */}
-          <div className="space-y-4">
-              <h3 className="font-bold text-gray-600">基本情報</h3>
-              <div>
-                  <label className="block text-xs text-gray-500">図番 (自動生成・編集可)</label>
-                  <input type="text" name="drawingNo" value={formData.drawingNo} onChange={handleInputChange} className="w-full border p-2 rounded" />
-              </div>
-              <div>
-                  <label className="block text-xs text-gray-500">品番 <span className="text-red-500">*</span></label>
-                  <input type="text" name="partNo" value={formData.partNo} onChange={handleInputChange} className="w-full border p-2 rounded" placeholder="例: P-10" />
-              </div>
-              <div>
-                  <label className="block text-xs text-gray-500">客先コード</label>
-                  <input type="text" name="customerCode" value={formData.customerCode} onChange={handleInputChange} className="w-full border p-2 rounded" />
-              </div>
-              <div>
-                  <label className="block text-xs text-gray-500">会社名</label>
-                  <input type="text" name="companyName" value={formData.companyName} onChange={handleInputChange} className="w-full border p-2 rounded" />
-              </div>
-              <div className="grid grid-cols-2 gap-2">
-                  <div>
-                    <label className="block text-xs text-gray-500">材質 (選択または入力)</label>
-                    <input 
-                      list="material-options" 
-                      name="material" 
-                      value={formData.material} 
-                      onChange={handleInputChange} 
-                      className="w-full border p-2 rounded"
-                      placeholder="候補から選択 または 入力" 
-                    />
-                    <datalist id="material-options">
-                      {materialOptions.map(m => <option key={m} value={m} />)}
-                    </datalist>
-                  </div>
-                  <div>
-                    <label className="block text-xs text-gray-500">硬度</label>
-                    <input type="text" name="hardness" value={formData.hardness} onChange={handleInputChange} className="w-full border p-2 rounded" />
-                  </div>
-              </div>
-              <div>
-                  <label className="block text-xs text-gray-500">備考</label>
-                  <textarea name="note" value={formData.note} onChange={handleInputChange} className="w-full border p-2 rounded h-20" />
-              </div>
-          </div>
-
-          {/* Right Column: Dimensions */}
-          <div className="bg-gray-50 p-4 rounded border">
-              <div className="flex justify-between items-center mb-4">
-                  <h3 className="font-bold text-gray-600">寸法入力 (mm)</h3>
-                  <span className="text-xs text-gray-400">値 | 上限(+) | 下限(-)</span>
-              </div>
-              
-              {formData.partType === 'O-Ring' && (
-                <div className="space-y-4">
-                  <DimensionInputGroup 
-                    label="ID (内径) *" 
-                    baseVal={formData.oRingDims?.id} setBase={(v) => handleDimChange('O-Ring', 'id', v)}
-                    plusVal={formData.oRingDims?.idTolPlus} setPlus={(v) => handleDimChange('O-Ring', 'idTolPlus', v)}
-                    minusVal={formData.oRingDims?.idTolMinus} setMinus={(v) => handleDimChange('O-Ring', 'idTolMinus', v)}
-                  />
-                  <DimensionInputGroup 
-                    label="W (線径) *" 
-                    baseVal={formData.oRingDims?.w} setBase={(v) => handleDimChange('O-Ring', 'w', v)}
-                    plusVal={formData.oRingDims?.wTolPlus} setPlus={(v) => handleDimChange('O-Ring', 'wTolPlus', v)}
-                    minusVal={formData.oRingDims?.wTolMinus} setMinus={(v) => handleDimChange('O-Ring', 'wTolMinus', v)}
-                  />
-                </div>
-              )}
-
-              {formData.partType === 'Backup Ring' && (
-                <div className="space-y-4">
-                    {/* Shape Selector */}
+        {/* --- FORM LAYOUT --- */}
+        <div className="space-y-6">
+            
+            {/* 1. Common Info */}
+            <div className="bg-gray-50 p-4 rounded border">
+                 <h3 className="font-bold text-gray-600 mb-2">基本情報 {formData.partType === 'Composite' ? '(セット全体)' : ''}</h3>
+                 <div className="grid grid-cols-1 md:grid-cols-2 gap-4">
                     <div>
-                      <label className="block text-sm font-bold text-blue-800">形状タイプ</label>
-                      <select 
-                        value={formData.backupRingDims?.shape} 
-                        onChange={(e) => handleShapeChange(e.target.value)}
-                        className="w-full border p-2 rounded bg-white"
-                      >
-                        <option value="Endless">エンドレス (Endless)</option>
-                        <option value="Spiral">スパイラル (Spiral)</option>
-                        <option value="Bias Cut">バイアスカット (Bias Cut)</option>
-                      </select>
+                        <label className="block text-xs text-gray-500">図番</label>
+                        <input type="text" name="drawingNo" value={formData.drawingNo} onChange={handleInputChange} className="w-full border p-2 rounded" />
                     </div>
-                    <hr className="border-gray-300"/>
-
-                  <DimensionInputGroup 
-                    label="φD (外径) *" 
-                    baseVal={formData.backupRingDims?.od} setBase={(v) => handleDimChange('Backup Ring', 'od', v)}
-                    plusVal={formData.backupRingDims?.odTolPlus} setPlus={(v) => handleDimChange('Backup Ring', 'odTolPlus', v)}
-                    minusVal={formData.backupRingDims?.odTolMinus} setMinus={(v) => handleDimChange('Backup Ring', 'odTolMinus', v)}
-                  />
-                  <DimensionInputGroup 
-                    label="φd (内径) *" 
-                    baseVal={formData.backupRingDims?.id} setBase={(v) => handleDimChange('Backup Ring', 'id', v)}
-                    plusVal={formData.backupRingDims?.idTolPlus} setPlus={(v) => handleDimChange('Backup Ring', 'idTolPlus', v)}
-                    minusVal={formData.backupRingDims?.idTolMinus} setMinus={(v) => handleDimChange('Backup Ring', 'idTolMinus', v)}
-                  />
-                  <DimensionInputGroup 
-                    label="T (厚み) *" 
-                    baseVal={formData.backupRingDims?.t} setBase={(v) => handleDimChange('Backup Ring', 't', v)}
-                    plusVal={formData.backupRingDims?.tTolPlus} setPlus={(v) => handleDimChange('Backup Ring', 'tTolPlus', v)}
-                    minusVal={formData.backupRingDims?.tTolMinus} setMinus={(v) => handleDimChange('Backup Ring', 'tTolMinus', v)}
-                  />
-
-                  {/* Angle Configuration for Bias Cut */}
-                  {formData.backupRingDims?.shape === 'Bias Cut' && (
-                    <div className="mt-4 pt-4 border-t border-gray-200">
-                      <DimensionInputGroup 
-                        label="バイアスカット角度 (度)" 
-                        baseVal={formData.backupRingDims?.angle} setBase={(v) => handleDimChange('Backup Ring', 'angle', v)}
-                        plusVal={formData.backupRingDims?.angleTolPlus} setPlus={(v) => handleDimChange('Backup Ring', 'angleTolPlus', v)}
-                        minusVal={formData.backupRingDims?.angleTolMinus} setMinus={(v) => handleDimChange('Backup Ring', 'angleTolMinus', v)}
-                        unit="°"
-                      />
+                    <div>
+                        <label className="block text-xs text-gray-500">
+                          {formData.partType === 'Composite' ? '品番 (セット品)' : '品番'} <span className="text-red-500">*</span>
+                        </label>
+                        <input type="text" name="partNo" value={formData.partNo} onChange={handleInputChange} className="w-full border p-2 rounded" />
                     </div>
-                  )}
+                    <div>
+                        <label className="block text-xs text-gray-500">客先コード</label>
+                        <input type="text" name="customerCode" value={formData.customerCode} onChange={handleInputChange} className="w-full border p-2 rounded" />
+                    </div>
+                    <div>
+                        <label className="block text-xs text-gray-500">会社名</label>
+                        <input type="text" name="companyName" value={formData.companyName} onChange={handleInputChange} className="w-full border p-2 rounded" />
+                    </div>
+                    <div>
+                        <label className="block text-xs text-gray-500">備考</label>
+                        <textarea name="note" value={formData.note} onChange={handleInputChange} className="w-full border p-2 rounded h-10" />
+                    </div>
+                 </div>
+                 
+                 {/* Standalone Material/Hardness */}
+                 {formData.partType !== 'Composite' && (
+                     <div className="grid grid-cols-2 gap-4 mt-4">
+                        <div>
+                            <label className="block text-xs text-gray-500">材質</label>
+                            <input 
+                              list="material-options" name="material" value={formData.material} onChange={handleInputChange} 
+                              className="w-full border p-2 rounded"
+                            />
+                            <datalist id="material-options">
+                              {(formData.partType === 'O-Ring' ? O_RING_MATERIALS : BACKUP_RING_MATERIALS).map(m => <option key={m} value={m} />)}
+                            </datalist>
+                        </div>
+                        <div>
+                            <label className="block text-xs text-gray-500">硬度</label>
+                            <input type="text" name="hardness" value={formData.hardness} onChange={handleInputChange} className="w-full border p-2 rounded" />
+                        </div>
+                     </div>
+                 )}
+            </div>
+
+            {/* 2. Component Inputs (Conditional) */}
+            
+            {/* O-RING COMPONENT */}
+            {(formData.partType === 'O-Ring' || formData.partType === 'Composite') && (
+                <div className="bg-white p-4 rounded border border-blue-200">
+                    <h3 className="font-bold text-blue-700 mb-2 border-b border-blue-100 pb-1">
+                      {formData.partType === 'Composite' ? '構成1: Oリング' : '寸法情報 (Oリング)'}
+                    </h3>
+                    
+                    {formData.partType === 'Composite' && (
+                        <div className="grid grid-cols-3 gap-4 mb-4">
+                            <div>
+                                <label className="block text-xs text-gray-500">P/N (Oリング) *</label>
+                                <input type="text" name="oRingPartNo" value={formData.compositeDetails?.oRingPartNo} onChange={handleCompositeDetailChange} className="w-full border p-2 rounded" />
+                            </div>
+                            <div>
+                                <label className="block text-xs text-gray-500">材質</label>
+                                <input list="oring-mats" name="oRingMaterial" value={formData.compositeDetails?.oRingMaterial} onChange={handleCompositeDetailChange} className="w-full border p-2 rounded" />
+                                <datalist id="oring-mats">{O_RING_MATERIALS.map(m => <option key={m} value={m} />)}</datalist>
+                            </div>
+                            <div>
+                                <label className="block text-xs text-gray-500">硬度</label>
+                                <input type="text" name="oRingHardness" value={formData.compositeDetails?.oRingHardness} onChange={handleCompositeDetailChange} className="w-full border p-2 rounded" />
+                            </div>
+                        </div>
+                    )}
+
+                    <div className="space-y-4">
+                        <DimensionInputGroup 
+                            label="ID (内径) *" 
+                            baseVal={formData.oRingDims?.id} setBase={(v) => handleDimChange('O-Ring', 'id', v)}
+                            plusVal={formData.oRingDims?.idTolPlus} setPlus={(v) => handleDimChange('O-Ring', 'idTolPlus', v)}
+                            minusVal={formData.oRingDims?.idTolMinus} setMinus={(v) => handleDimChange('O-Ring', 'idTolMinus', v)}
+                        />
+                        <DimensionInputGroup 
+                            label="W (線径) *" 
+                            baseVal={formData.oRingDims?.w} setBase={(v) => handleDimChange('O-Ring', 'w', v)}
+                            plusVal={formData.oRingDims?.wTolPlus} setPlus={(v) => handleDimChange('O-Ring', 'wTolPlus', v)}
+                            minusVal={formData.oRingDims?.wTolMinus} setMinus={(v) => handleDimChange('O-Ring', 'wTolMinus', v)}
+                        />
+                    </div>
                 </div>
-              )}
-          </div>
+            )}
+
+            {/* BACKUP RING COMPONENT */}
+            {(formData.partType === 'Backup Ring' || formData.partType === 'Composite') && (
+                <div className="bg-white p-4 rounded border border-green-200">
+                     <h3 className="font-bold text-green-700 mb-2 border-b border-green-100 pb-1">
+                        {formData.partType === 'Composite' ? '構成2: バックアップリング' : '寸法情報 (バックアップリング)'}
+                     </h3>
+
+                     {formData.partType === 'Composite' && (
+                        <div className="grid grid-cols-2 gap-4 mb-4">
+                            <div>
+                                <label className="block text-xs text-gray-500">P/N (BUリング) *</label>
+                                <input type="text" name="backupRingPartNo" value={formData.compositeDetails?.backupRingPartNo} onChange={handleCompositeDetailChange} className="w-full border p-2 rounded" />
+                            </div>
+                            <div>
+                                <label className="block text-xs text-gray-500">材質</label>
+                                <input list="br-mats" name="backupRingMaterial" value={formData.compositeDetails?.backupRingMaterial} onChange={handleCompositeDetailChange} className="w-full border p-2 rounded" />
+                                <datalist id="br-mats">{BACKUP_RING_MATERIALS.map(m => <option key={m} value={m} />)}</datalist>
+                            </div>
+                        </div>
+                    )}
+
+                     <div className="space-y-4">
+                        <div>
+                           <label className="block text-sm font-bold text-gray-700">形状タイプ</label>
+                           <select 
+                            value={formData.backupRingDims?.shape} 
+                            onChange={(e) => handleShapeChange(e.target.value)}
+                            className="w-full border p-2 rounded bg-white"
+                           >
+                            <option value="Endless">エンドレス</option>
+                            <option value="Spiral">スパイラル</option>
+                            <option value="Bias Cut">バイアスカット</option>
+                           </select>
+                        </div>
+                        
+                        <DimensionInputGroup 
+                            label="φD (外径) *" 
+                            baseVal={formData.backupRingDims?.od} setBase={(v) => handleDimChange('Backup Ring', 'od', v)}
+                            plusVal={formData.backupRingDims?.odTolPlus} setPlus={(v) => handleDimChange('Backup Ring', 'odTolPlus', v)}
+                            minusVal={formData.backupRingDims?.odTolMinus} setMinus={(v) => handleDimChange('Backup Ring', 'odTolMinus', v)}
+                        />
+                        <DimensionInputGroup 
+                            label="φd (内径) *" 
+                            baseVal={formData.backupRingDims?.id} setBase={(v) => handleDimChange('Backup Ring', 'id', v)}
+                            plusVal={formData.backupRingDims?.idTolPlus} setPlus={(v) => handleDimChange('Backup Ring', 'idTolPlus', v)}
+                            minusVal={formData.backupRingDims?.idTolMinus} setMinus={(v) => handleDimChange('Backup Ring', 'idTolMinus', v)}
+                        />
+                        <DimensionInputGroup 
+                            label="T (厚み) *" 
+                            baseVal={formData.backupRingDims?.t} setBase={(v) => handleDimChange('Backup Ring', 't', v)}
+                            plusVal={formData.backupRingDims?.tTolPlus} setPlus={(v) => handleDimChange('Backup Ring', 'tTolPlus', v)}
+                            minusVal={formData.backupRingDims?.tTolMinus} setMinus={(v) => handleDimChange('Backup Ring', 'tTolMinus', v)}
+                        />
+
+                        {formData.backupRingDims?.shape !== 'Endless' && (
+                            <div className="mt-4 pt-4 border-t border-gray-100">
+                            <DimensionInputGroup 
+                                label={formData.backupRingDims?.shape === 'Spiral' ? "スパイラル角度 (度)" : "バイアスカット角度 (度)"} 
+                                baseVal={formData.backupRingDims?.angle} setBase={(v) => handleDimChange('Backup Ring', 'angle', v)}
+                                plusVal={formData.backupRingDims?.angleTolPlus} setPlus={(v) => handleDimChange('Backup Ring', 'angleTolPlus', v)}
+                                minusVal={formData.backupRingDims?.angleTolMinus} setMinus={(v) => handleDimChange('Backup Ring', 'angleTolMinus', v)}
+                                unit="°"
+                            />
+                            </div>
+                        )}
+                     </div>
+                </div>
+            )}
         </div>
 
         <div className="mt-8">
@@ -427,7 +572,6 @@ function App() {
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">図番</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">種別</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">品番</th>
-                        <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">形状/ID</th>
                         <th className="px-6 py-3 text-left text-xs font-medium text-gray-500 uppercase tracking-wider">作成日</th>
                         <th className="px-6 py-3 text-right text-xs font-medium text-gray-500 uppercase tracking-wider">操作</th>
                     </tr>
@@ -438,12 +582,6 @@ function App() {
                             <td className="px-6 py-4 whitespace-nowrap font-mono">{item.drawingNo}</td>
                             <td className="px-6 py-4 whitespace-nowrap">{item.partType}</td>
                             <td className="px-6 py-4 whitespace-nowrap">{item.partNo}</td>
-                            <td className="px-6 py-4 whitespace-nowrap text-xs">
-                              {item.partType === 'O-Ring' 
-                                ? `ID: ${item.oRingDims?.id}` 
-                                : `${item.backupRingDims?.shape}`
-                              }
-                            </td>
                             <td className="px-6 py-4 whitespace-nowrap text-sm text-gray-500">{new Date(item.createdAt).toLocaleDateString()}</td>
                             <td className="px-6 py-4 whitespace-nowrap text-right text-sm font-medium">
                                 <button onClick={() => loadFromHistory(item)} className="text-indigo-600 hover:text-indigo-900 mr-4">再利用</button>
@@ -463,7 +601,6 @@ function App() {
 
   return (
     <div className="min-h-screen flex flex-col">
-      {/* Header */}
       <header className="bg-slate-800 text-white shadow-lg sticky top-0 z-50">
         <div className="max-w-7xl mx-auto px-4 py-3 flex items-center justify-between">
             <div className="flex items-center space-x-2">
@@ -487,7 +624,6 @@ function App() {
         </div>
       </header>
 
-      {/* Main Content */}
       <main className="flex-grow p-4 md:p-8">
         {view === 'form' && renderForm()}
         
@@ -497,23 +633,32 @@ function App() {
             <div className="flex flex-col items-center space-y-4">
                 <div className="w-full max-w-6xl flex justify-between items-center bg-white p-4 rounded shadow mb-4">
                     <h2 className="text-lg font-bold">プレビュー</h2>
-                    <div className="space-x-4">
+                    <div className="space-x-4 flex items-center">
                         <Button variant="secondary" onClick={() => setView('form')}>修正する</Button>
+                        <Button variant="success" onClick={handleOpenQuoteModal}>
+                            この条件で見積もり依頼
+                        </Button>
                         <Button onClick={handleDownloadPDF} disabled={isGeneratingPdf}>
                             {isGeneratingPdf ? '生成中...' : 'PDFダウンロード & 保存'}
                         </Button>
                     </div>
                 </div>
                 
-                {/* The Canvas itself */}
                 <DrawingCanvas ref={drawingRef} data={formData} />
             </div>
         )}
       </main>
 
       <footer className="bg-gray-100 border-t py-4 text-center text-xs text-gray-500">
-        &copy; {new Date().getFullYear()} SealRing Gen System v1.1
+        &copy; {new Date().getFullYear()} SealRing Gen System v1.2
       </footer>
+
+      <QuoteModal 
+        isOpen={isQuoteModalOpen} 
+        onClose={() => setIsQuoteModalOpen(false)} 
+        text={quoteText}
+        subject={quoteSubject}
+      />
     </div>
   );
 }
